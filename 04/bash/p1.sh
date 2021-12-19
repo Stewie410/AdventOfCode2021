@@ -14,62 +14,61 @@ OPTIONS:
 EOF
 }
 
-# File
-isWinningBoard() {
-	grep --quiet "#" "${1}" || return
-	grep --extended-regexp '^#(\s+#){4}' "${1}" && return
-	for idx in {1..5}; do
-		awk --assign "idx=${idx}" '{print $(idx)}' "${1}" | tr --delete '\n' | grep --extended-regexp '^#{5}$' && return
+getWinningBoard() {
+	for (( i = 0; i < ( $(wc --lines < "${1}") / 5 ); i++ )); do
+		sed --quiet "$((1 + (i * 5))),$((5 + (i * 5)))p" "${1}" | \
+			awk --assign board="${i}" '
+				/^(#\s){4}#$/ {
+					print board
+					exit 0
+				}
+				/#/ {
+					for (i = 1; i <= 5; i++)
+						if ($i == "#")
+							cols[i]++
+				}
+				END {
+					for (i = 1; i <= 5; i++) {
+						if (cols[i] == 5) {
+							print board
+							exit 0
+						}
+					}
+					exit 1
+				}
+			' && return
 	done
-	return 1
 }
 
-game() {
-	local -a boards numbers
-	local count num
-
-	mapfile -t numbers <<< "$(head -1 "${1}" | tr "," '\n')"
-
-	count="$(grep '^\s*$' --count "${1}")"
-	for ((i = 0; i < count; i++)); do
-		boards[${i}]="$(mktemp board.XXXXXXXXXX)"
-		sed --quiet "$((3+(i*6))),$((7+(i*6)))p" "${1}" > "${boards[${i}]}"
-	done
-
-	for i in "${numbers[@]}"; do
-		num="${i}"
-		(( ${#num} == 1 )) && num=" ${num}"
-		for ((j = 0; j < ${#boards[@]}; j++)); do
-			sed -i'' "s/${num}/#/g" "${boards[${j}]}"
-			if isWinningBoard "${boards[${j}]}"; then
-				winner="1"
-				cat <<- EOF
-					Winning Board:	${j}
-					Score:		$((i * $(tr --delete '#' < "${boards[${j}]}" | xargs | tr ' ' "+" | bc) ))
-					winning board:
-				EOF
-				sed 's/^/\t/' "${boards[${j}]}"
-				break 2
-			fi
-		done
-	done
-
-	[ -n "${winner}" ] && return
-	printf '%s\n' "No winning board" >&2
-	return 1
+getBoardScore() {
+	sed --quiet "$((1 + (${1} * 5))),$((5 + (${1} * 5)))p" "${2}" | \
+		sed 's/#/0/g;s/ /+/g' | \
+		paste --serial --delimiter="+" | \
+		bc
 }
 
 game_v2() {
 	local -a numbers
-	local boards
-	boards="$(mktemp bingo_board.XXXXXXXXXX)"
+	local boards score board
+	boards="$(mktemp)"
 
 	mapfile -t numbers <<< "$(head -1 "${1}" | tr ',' "\n")"
-	sed 1,2d "${1}" | sed 's/^ /0/;s/  / 0/g' > "${boards}"
+	sed 1,2d "${1}" | sed 's/^ /0/;s/  / 0/g;/^\s*$/d' > "${boards}"
 
 	for i in "${numbers[@]}"; do
-		#sed "s/\"${i}\"/"
+		(( ${#i} == 1 )) && i="0${i}"
+		sed -i'' "s/${i}/#/g" "${boards}"
+		board="$(getWinningBoard "${boards}")"
+		if [ -n "${board}" ]; then
+			score="$(getBoardScore "${board}" "${boards}")"
+			sed --quiet "$((1 + (board * 5))),$((5 + (board * 5)))p" "${boards}" | column -t
+			printf '%s\n' "Board: ${board}" "Base: ${score}" "Last: ${i}" "Score: $((i * score))"
+			break
+		fi
 	done
+
+	rm -f "${boards}"
+	((score))
 }
 
 main() {
@@ -101,7 +100,7 @@ main() {
 		return 1
 	fi
 
-	game "${*}"
+	game_v2 "${*}"
 }
 
 trap 'find /tmp -type f -name "board.*" -exec rm --force {} +' EXIT
